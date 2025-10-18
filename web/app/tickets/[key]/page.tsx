@@ -10,7 +10,7 @@ export default function TicketDetail(){
 
   const load = async (value = mu) => {
     const r = await fetch(`${base}/api/demo/diff?key=${key}&mu=${value}`)
-    const text = await r.text() // keep as .text() since API now returns PlainTextResponse
+    const text = await r.json()
     setDiff(text)
   }
 
