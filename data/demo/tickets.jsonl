@@ -1,2 +1,0 @@
-{"key":"DEMO-1","summary":"Fix pagination boundary in Pager","description":"Users see missing items on page edges. Ensure step uses 'size'."}
-{"key":"DEMO-2","summary":"Add logging to export worker","description":"Adopt verbose logging on retries and failures."}
