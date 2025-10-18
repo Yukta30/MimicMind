@@ -1,52 +1,55 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Body        # Body added
 from fastapi.responses import PlainTextResponse
+from typing import Dict                          # NEW
 from ..generate.patcher import Patcher
 from ..providers.llm import DummyProvider
-from fastapi import Body
-from typing import Dict
-
 
 app = FastAPI()
 provider = DummyProvider()
 patcher = Patcher(provider)
 
+# (your helpers)
 def fetch_ticket_text(key: str):
-    # minimal stub for demo
     return {"key": key, "summary": "Fix pagination", "description": "Boundary bug in Pager"}
 
 def relevant_code_for(ticket):
-    # pretend context snippet
     return "class Pager:\n    def page(self, items, size):\n        pass\n"
 
+# EXISTING demo endpoint
 @app.get("/api/demo/diff", response_class=PlainTextResponse)
 def demo_diff(key: str = Query(...), mu: float = Query(0.4)):
     ticket = fetch_ticket_text(key)
     context = relevant_code_for(ticket)
-    # IMPORTANT: pass mu into the provider via patcher
     return patcher.propose_patch(ticket, context, mu=mu, key=key)
 
-@app.get("/api/repo/demo")
-def repo_demo() -> Dict[str, str]:
+# 🔽🔽🔽 PASTE THIS NEW ENDPOINT RIGHT HERE 🔽🔽🔽
+@app.post("/api/patch", response_class=PlainTextResponse)
+def propose_patch(payload: Dict = Body(...)):
     """
-    Tiny in-memory repo so the workbench can show files.
-    Replace with your own files later if you want.
-    """
-    return {
-        "src/pager.py": (
-            "class Pager:\n"
-            "    def page(self, items, size):\n"
-            "        pages = []\n"
-            "        for i in range(0, len(items)):\n"
-            "            if i % size == 0:\n"
-            "                pages.append(items[i:i+size])\n"
-            "        return pages\n"
-        ),
-        "src/exporter.py": (
-            "class Exporter:\n"
-            "    def run(self, items):\n"
-            "        for it in items:\n"
-            "            self._send(it)\n"
-            "    def _send(self, item): ...\n"
-        ),
-        "README.md": "# Demo repo for MimicMind\\n",
+    payload = {
+      "ticket": {"key":"WB-1","title":"Add search","description":"..."},
+      "files": {"path": "content", ...},
+      "mu": 0.4
     }
+    """
+    ticket = payload.get("ticket") or {"key": "WB-1", "title": "Untitled", "description": ""}
+    files: Dict[str, str] = payload.get("files") or {}
+    mu = float(payload.get("mu", 0.4))
+
+    # Build a small context string from repo contents
+    snippets = []
+    for path, content in files.items():
+        head = "\n".join(content.splitlines()[:20])  # first 20 lines
+        snippets.append(f"### {path}\n{head}")
+    context = "\n\n".join(snippets) or "No files"
+
+    # Reuse your existing patcher/provider (they already vary by mu)
+    patch = patcher.propose_patch(
+        {"key": ticket.get("key"), "summary": ticket.get("title"), "description": ticket.get("description")},
+        context,
+        mu=mu,
+        key=ticket.get("key", "WB-1"),
+    )
+
+    return patch or "--- a/empty\n+++ b/empty\n@@\n+No patch generated (demo fallback)\n"
+# 🔼🔼🔼 END OF NEW ENDPOINT 🔼🔼🔼
