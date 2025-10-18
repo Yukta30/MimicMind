@@ -1,22 +1,23 @@
 from fastapi import FastAPI, Query
-from fastapi.middleware.cors import CORSMiddleware
-from .jira_webhook import router as jira_router
+from fastapi.responses import PlainTextResponse
 from ..generate.patcher import Patcher
-from ..retrieve.ticket_retrieve import fetch_ticket_text
-from ..retrieve.code_retrieve import relevant_code_for
+from ..providers.llm import DummyProvider
 
-app = FastAPI(title="MimicMind")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.include_router(jira_router)
+app = FastAPI()
+provider = DummyProvider()
+patcher = Patcher(provider)
 
-patcher = Patcher()
+def fetch_ticket_text(key: str):
+    # minimal stub for demo
+    return {"key": key, "summary": "Fix pagination", "description": "Boundary bug in Pager"}
 
-@app.get("/api/demo/diff")
+def relevant_code_for(ticket):
+    # pretend context snippet
+    return "class Pager:\n    def page(self, items, size):\n        pass\n"
+
+@app.get("/api/demo/diff", response_class=PlainTextResponse)
 def demo_diff(key: str = Query(...), mu: float = Query(0.4)):
     ticket = fetch_ticket_text(key)
     context = relevant_code_for(ticket)
-    return patcher.propose_patch(ticket, context)
-
-@app.get("/health")
-def health():
-    return {"ok": True, "mode": "demo"}
+    # IMPORTANT: pass mu into the provider via patcher
+    return patcher.propose_patch(ticket, context, mu=mu, key=key)
