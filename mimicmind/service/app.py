@@ -5,6 +5,16 @@ from ..generate.patcher import Patcher
 from ..providers.llm import DummyProvider
 
 app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or ["https://mimicmind-4.onrender.com"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 provider = DummyProvider()
 patcher = Patcher(provider)
 
