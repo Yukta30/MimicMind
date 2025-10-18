@@ -75,3 +75,51 @@ def propose_patch(payload: Dict = Body(...)):
         key=ticket.get("key", "WB-1"),
     )
     return patch or "--- a/empty\n+++ b/empty\n@@\n+No patch generated (demo fallback)\n"
+
+from fastapi import UploadFile, File, Form
+import zipfile, io
+
+ACCEPT_EXT = ('.py','.ts','.tsx','.js','.jsx','.json','.md',
+              '.go','.java','.rb','.rs','.cpp','.c','.cs','.php','.kt','.swift')
+
+def _wanted(name: str) -> bool:
+    n = name.lower()
+    if n.endswith('/'): return False
+    if '/.git/' in n or n.startswith('.git/'): return False
+    if '/node_modules/' in n: return False
+    if '/build/' in n or '/dist/' in n: return False
+    return any(n.endswith(ext) for ext in ACCEPT_EXT)
+
+@app.post("/api/patch-zip", response_class=PlainTextResponse)
+async def propose_patch_zip(
+    file: UploadFile = File(...),
+    mu: float = Form(0.4),
+    key: str = Form('WB-1'),
+    title: str = Form('Untitled'),
+    description: str = Form(''),
+):
+    data = await file.read()
+    z = zipfile.ZipFile(io.BytesIO(data))
+    files: Dict[str, str] = {}
+    for name in z.namelist():
+        if not _wanted(name): continue
+        try:
+            raw = z.read(name)
+            text = raw.decode('utf-8', errors='ignore')
+        except Exception:
+            continue
+        files[name] = text
+
+    snippets = []
+    for path, content in files.items():
+        head = "\n".join(content.splitlines()[:20])
+        snippets.append(f"### {path}\n{head}")
+    context = "\n\n".join(snippets) or "No files"
+
+    patch = patcher.propose_patch(
+        {"key": key, "summary": title, "description": description},
+        context,
+        mu=mu,
+        key=key,
+    )
+    return patch or "--- a/empty\n+++ b/empty\n@@\n+No patch generated (demo fallback)\n"
