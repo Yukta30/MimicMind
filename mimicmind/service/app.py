@@ -123,3 +123,48 @@ async def propose_patch_zip(
         key=key,
     )
     return patch or "--- a/empty\n+++ b/empty\n@@\n+No patch generated (demo fallback)\n"
+
+
+import io, zipfile
+from fastapi import UploadFile, File, Form
+from fastapi.responses import JSONResponse
+
+ACCEPT_EXT = {".py",".ts",".tsx",".js",".jsx",".json",".md",".go",".java",
+              ".rb",".rs",".cpp",".c",".cs",".php",".kt",".swift"}
+
+def _keep(path: str) -> bool:
+    p = path.lower()
+    if "node_modules/" in p or "/build/" in p or "/dist/" in p: return False
+    if p.startswith(".git/") or "/.git/" in p: return False
+    return any(p.endswith(ext) for ext in ACCEPT_EXT)
+
+@app.post("/api/patch-zip-json")
+async def patch_zip_json(
+    file: UploadFile = File(...),
+    key: str = Form("WB-1"),
+    title: str = Form("Upload"),
+    description: str = Form(""),
+    mu: float = Form(0.4),
+):
+    data = await file.read()
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    files: dict[str, str] = {}
+    for name in zf.namelist():
+        if _keep(name):
+            try:
+                files[name] = zf.read(name).decode("utf-8", "ignore")
+            except Exception:
+                pass
+
+    # Build short context from the uploaded repo
+    heads = []
+    for path, content in list(files.items())[:80]:  # avoid giant payloads
+        lines = content.splitlines()
+        heads.append(f"### {path}\n" + "\n".join(lines[:20]))
+    context = "\n\n".join(heads) or "No files"
+
+    ticket = {"key": key, "summary": title, "description": description}
+    diff = patcher.propose_patch(ticket, context, mu=mu, key=key) or ""
+
+    return JSONResponse({"diff": diff, "files": files})
+
