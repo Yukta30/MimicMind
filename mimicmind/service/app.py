@@ -1,15 +1,24 @@
-from fastapi import FastAPI, Query, Body
-from fastapi.responses import PlainTextResponse
+# mimicmind/service/app.py
+from __future__ import annotations
+
+import io
+import zipfile
 from typing import Dict
-from ..generate.patcher import Patcher
-from ..providers.llm import DummyProvider
 
-app = FastAPI()
+from fastapi import FastAPI, UploadFile, File, Form, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse, JSONResponse
 
+# Your existing patcher/provider
+from ..generate.patcher import Patcher
+from ..providers.llm import DummyProvider  # swap with a real provider when ready
+
+app = FastAPI(title="MimicMind API")
+
+# --- CORS so your Next.js frontend can call us in the browser ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # or ["https://mimicmind-4.onrender.com"]
+    allow_origins=["*"],           # tighten to your web origin if you want
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -18,125 +27,90 @@ app.add_middleware(
 provider = DummyProvider()
 patcher = Patcher(provider)
 
-def fetch_ticket_text(key: str):
-    return {"key": key, "summary": "Fix pagination", "description": "Boundary bug in Pager"}
+# ---------- helpers ----------
 
-def relevant_code_for(ticket):
-    return "class Pager:\n    def page(self, items, size):\n        pass\n"
-
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-@app.get("/api/demo/diff", response_class=PlainTextResponse)
-def demo_diff(key: str = Query(...), mu: float = Query(0.4)):
-    ticket = fetch_ticket_text(key)
-    context = relevant_code_for(ticket)
-    return patcher.propose_patch(ticket, context, mu=mu, key=key)
-
-@app.get("/api/repo/demo")
-def repo_demo() -> Dict[str, str]:
-    return {
-        "src/pager.py": (
-            "class Pager:\n"
-            "    def page(self, items, size):\n"
-            "        pages = []\n"
-            "        for i in range(0, len(items)):\n"
-            "            if i % size == 0:\n"
-            "                pages.append(items[i:i+size])\n"
-            "        return pages\n"
-        ),
-        "src/exporter.py": (
-            "class Exporter:\n"
-            "    def run(self, items):\n"
-            "        for it in items:\n"
-            "            self._send(it)\n"
-            "    def _send(self, item): ...\n"
-        ),
-        "README.md": "# Demo repo for MimicMind\n",
-    }
-
-@app.post("/api/patch", response_class=PlainTextResponse)
-def propose_patch(payload: Dict = Body(...)):
-    ticket = payload.get("ticket") or {"key": "WB-1", "title": "Untitled", "description": ""}
-    files: Dict[str, str] = payload.get("files") or {}
-    mu = float(payload.get("mu", 0.4))
-
-    snippets = []
-    for path, content in files.items():
-        head = "\n".join(content.splitlines()[:20])
-        snippets.append(f"### {path}\n{head}")
-    context = "\n\n".join(snippets) or "No files"
-
-    patch = patcher.propose_patch(
-        {"key": ticket.get("key"), "summary": ticket.get("title"), "description": ticket.get("description")},
-        context,
-        mu=mu,
-        key=ticket.get("key", "WB-1"),
-    )
-    return patch or "--- a/empty\n+++ b/empty\n@@\n+No patch generated (demo fallback)\n"
-
-from fastapi import UploadFile, File, Form
-import zipfile, io
-
-ACCEPT_EXT = ('.py','.ts','.tsx','.js','.jsx','.json','.md',
-              '.go','.java','.rb','.rs','.cpp','.c','.cs','.php','.kt','.swift')
-
-def _wanted(name: str) -> bool:
-    n = name.lower()
-    if n.endswith('/'): return False
-    if '/.git/' in n or n.startswith('.git/'): return False
-    if '/node_modules/' in n: return False
-    if '/build/' in n or '/dist/' in n: return False
-    return any(n.endswith(ext) for ext in ACCEPT_EXT)
-
-@app.post("/api/patch-zip", response_class=PlainTextResponse)
-async def propose_patch_zip(
-    file: UploadFile = File(...),
-    mu: float = Form(0.4),
-    key: str = Form('WB-1'),
-    title: str = Form('Untitled'),
-    description: str = Form(''),
-):
-    data = await file.read()
-    z = zipfile.ZipFile(io.BytesIO(data))
-    files: Dict[str, str] = {}
-    for name in z.namelist():
-        if not _wanted(name): continue
-        try:
-            raw = z.read(name)
-            text = raw.decode('utf-8', errors='ignore')
-        except Exception:
-            continue
-        files[name] = text
-
-    snippets = []
-    for path, content in files.items():
-        head = "\n".join(content.splitlines()[:20])
-        snippets.append(f"### {path}\n{head}")
-    context = "\n\n".join(snippets) or "No files"
-
-    patch = patcher.propose_patch(
-        {"key": key, "summary": title, "description": description},
-        context,
-        mu=mu,
-        key=key,
-    )
-    return patch or "--- a/empty\n+++ b/empty\n@@\n+No patch generated (demo fallback)\n"
-
-
-import io, zipfile
-from fastapi import UploadFile, File, Form
-from fastapi.responses import JSONResponse
-
-ACCEPT_EXT = {".py",".ts",".tsx",".js",".jsx",".json",".md",".go",".java",
-              ".rb",".rs",".cpp",".c",".cs",".php",".kt",".swift"}
+ACCEPT_EXT = {
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".md",
+    ".go", ".java", ".rb", ".rs", ".cpp", ".c", ".cs", ".php", ".kt", ".swift",
+}
 
 def _keep(path: str) -> bool:
     p = path.lower()
-    if "node_modules/" in p or "/build/" in p or "/dist/" in p: return False
-    if p.startswith(".git/") or "/.git/" in p: return False
+    if "node_modules/" in p or "/build/" in p or "/dist/" in p:
+        return False
+    if p.startswith(".git/") or "/.git/" in p:
+        return False
     return any(p.endswith(ext) for ext in ACCEPT_EXT)
+
+def _context_from_files(files: Dict[str, str], head_lines: int = 20, max_files: int = 80) -> str:
+    """
+    Build a small context string for the LLM by concatenating the first N lines
+    of up to M files. This keeps context light but style-rich.
+    """
+    heads = []
+    for i, (path, content) in enumerate(files.items()):
+        if i >= max_files:
+            break
+        lines = content.splitlines()
+        heads.append(f"### {path}\n" + "\n".join(lines[:head_lines]))
+    return "\n\n".join(heads) or "No files"
+
+# ---------- minimal health ----------
+
+@app.get("/", response_class=PlainTextResponse)
+def root():
+    return "ok"
+
+# ---------- demo repo for first-load UX ----------
+
+_DEMO_REPO: Dict[str, str] = {
+    "src/pager.py": (
+        "class Pager:\n"
+        "    def page(self, items, size):\n"
+        "        pages = []\n"
+        "        for i in range(0, len(items)):\n"
+        "            if i % size == 0:\n"
+        "                pages.append(items[i:i+size])\n"
+        "        return pages\n"
+    ),
+    "README.md": "# Demo repo\n\nThis is a tiny sample used when nothing is uploaded.",
+}
+
+@app.get("/api/repo/demo")
+def repo_demo() -> Dict[str, str]:
+    """Return a tiny repo so the UI isn't empty on first load."""
+    return _DEMO_REPO
+
+# ---------- main endpoints used by the UI ----------
+
+@app.post("/api/patch", response_class=PlainTextResponse)
+def propose_patch(payload: Dict = Body(...)):
+    """
+    payload = {
+      "ticket": {"key":"WB-1","title":"...","description":"..."},
+      "files": {"path": "content", ...},
+      "mu": 0.4
+    }
+    """
+    ticket = payload.get("ticket") or {}
+    files: Dict[str, str] = payload.get("files") or {}
+    mu = float(payload.get("mu", 0.4))
+
+    # Build style/context from uploaded or demo files
+    ctx = _context_from_files(files) if files else _context_from_files(_DEMO_REPO)
+
+    # Call your patcher/LLM
+    key = ticket.get("key") or "WB-1"
+    summary = ticket.get("title") or ticket.get("summary") or "Untitled"
+    description = ticket.get("description") or ""
+    diff = patcher.propose_patch(
+        {"key": key, "summary": summary, "description": description},
+        ctx,
+        mu=mu,
+        key=key,
+    )
+
+    return diff or "--- a/empty\n+++ b/empty\n@@\n+No patch generated\n"
 
 @app.post("/api/patch-zip-json")
 async def patch_zip_json(
@@ -146,9 +120,43 @@ async def patch_zip_json(
     description: str = Form(""),
     mu: float = Form(0.4),
 ):
+    """
+    Accept a .zip archive of a repo, extract whitelisted text files, return BOTH:
+      - files: {path: text}
+      - diff: LLM-proposed patch
+    This powers the UI so the left file list is populated for .zip uploads.
+    """
     data = await file.read()
     zf = zipfile.ZipFile(io.BytesIO(data))
-    files: dict[str, str] = {}
+
+    files: Dict[str, str] = {}
+    for name in zf.namelist():
+        if _keep(name):
+            try:
+                files[name] = zf.read(name).decode("utf-8", "ignore")
+            except Exception:
+                # skip binary or undecodable files
+                pass
+
+    ctx = _context_from_files(files) if files else _context_from_files(_DEMO_REPO)
+    ticket = {"key": key, "summary": title, "description": description}
+    diff = patcher.propose_patch(ticket, ctx, mu=mu, key=key) or ""
+
+    return JSONResponse({"diff": diff, "files": files})
+
+# (Optional) keep your older /api/patch-zip if you already use it somewhere:
+@app.post("/api/patch-zip", response_class=PlainTextResponse)
+async def patch_zip_legacy(
+    file: UploadFile = File(...),
+    key: str = Form("WB-1"),
+    title: str = Form("Upload"),
+    description: str = Form(""),
+    mu: float = Form(0.4),
+):
+    data = await file.read()
+    zf = zipfile.ZipFile(io.BytesIO(data))
+
+    files: Dict[str, str] = {}
     for name in zf.namelist():
         if _keep(name):
             try:
@@ -156,15 +164,7 @@ async def patch_zip_json(
             except Exception:
                 pass
 
-    # Build short context from the uploaded repo
-    heads = []
-    for path, content in list(files.items())[:80]:  # avoid giant payloads
-        lines = content.splitlines()
-        heads.append(f"### {path}\n" + "\n".join(lines[:20]))
-    context = "\n\n".join(heads) or "No files"
-
+    ctx = _context_from_files(files) if files else _context_from_files(_DEMO_REPO)
     ticket = {"key": key, "summary": title, "description": description}
-    diff = patcher.propose_patch(ticket, context, mu=mu, key=key) or ""
-
-    return JSONResponse({"diff": diff, "files": files})
-
+    diff = patcher.propose_patch(ticket, ctx, mu=mu, key=key) or ""
+    return diff
