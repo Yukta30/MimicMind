@@ -1,11 +1,13 @@
 'use client'
-import { useEffect, useMemo, useState } from 'react'
+
+import { useEffect, useMemo, useRef, useState } from 'react'
 import DiffViewer from '@/components/DiffViewer'
 
-type Files = Record<string,string>
+type Files = Record<string, string>
+
 const ACCEPT = [
-  '.py','.ts','.tsx','.js','.jsx','.json','.md',
-  '.go','.java','.rb','.rs','.cpp','.c','.cs','.php','.kt','.swift'
+  '.py', '.ts', '.tsx', '.js', '.jsx', '.json', '.md',
+  '.go', '.java', '.rb', '.rs', '.cpp', '.c', '.cs', '.php', '.kt', '.swift'
 ]
 
 function keep(path: string) {
@@ -16,25 +18,36 @@ function keep(path: string) {
   return ACCEPT.some(ext => lower.endsWith(ext))
 }
 
-export default function Workbench(){
+export default function Workbench() {
   const API = process.env.NEXT_PUBLIC_API_BASE || ''
-  const [files,setFiles] = useState<Files>({})
-  const [active,setActive] = useState('')
-  const [mu,setMu] = useState(0.60)
-  const [title,setTitle] = useState('Add robust paging to Pager')
-  const [desc,setDesc] = useState('Users miss items at page boundaries. Ensure step uses size; add guard.')
-  const [diff,setDiff] = useState('')
+  const [files, setFiles] = useState<Files>({})
+  const [active, setActive] = useState('')
+  const [mu, setMu] = useState(0.60)
+  const [title, setTitle] = useState('Add robust paging to Pager')
+  const [desc, setDesc] = useState('Users miss items at page boundaries. Ensure step uses size; add guard.')
+  const [diff, setDiff] = useState('')
 
-  // Load demo repo (fallback)
+  // --- refs for folder input (to set non-standard attributes at runtime) ---
+  const folderRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (folderRef.current) {
+      // Add non-standard attributes so TS doesn't complain in JSX
+      (folderRef.current as any).setAttribute('webkitdirectory', 'true')
+      (folderRef.current as any).setAttribute('directory', 'true')
+    }
+  }, [])
+
+  // Load demo repo initially (user can replace by upload)
   const loadDemo = async () => {
     const r = await fetch(`${API}/api/repo/demo`)
     const d: Files = await r.json()
-    setFiles(d); setActive(Object.keys(d)[0] || '')
+    setFiles(d)
+    setActive(Object.keys(d)[0] || '')
   }
+  useEffect(() => { loadDemo() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(()=>{ loadDemo() },[])  // start with demo, but user can replace by upload
-
-  const fileList = useMemo(()=>Object.keys(files).sort(),[files])
+  const fileList = useMemo(() => Object.keys(files).sort(), [files])
 
   // --- Upload: folder (client-side read) ---
   const onPickFolder = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -42,7 +55,7 @@ export default function Workbench(){
     if (!list) return
     const map: Files = {}
     for (const file of Array.from(list)) {
-      // @ts-ignore - webkitRelativePath is supported in Chrome/Edge/Safari
+      // webkitRelativePath is supported by Chromium/WebKit
       const rel = (file as any).webkitRelativePath || file.name
       if (!keep(rel)) continue
       const txt = await file.text()
@@ -72,9 +85,11 @@ export default function Workbench(){
 
   // --- Propose patch with JSON files (folder upload path) ---
   const propose = async () => {
-    const payload = { ticket: { key:'WB-1', title, description: desc }, files, mu }
+    const payload = { ticket: { key: 'WB-1', title, description: desc }, files, mu }
     const r = await fetch(`${API}/api/patch`, {
-      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
     })
     const text = await r.text()
     setDiff(text)
@@ -89,30 +104,47 @@ export default function Workbench(){
         <section className="bg-white rounded-2xl shadow ring-1 ring-black/10 overflow-hidden">
           <div className="border-b px-4 py-2 text-sm text-gray-600 flex gap-2 items-center">
             <span className="mr-auto">Repository</span>
-            {/* Load demo */}
-            <button onClick={loadDemo} className="px-2 py-1 text-xs rounded bg-gray-100 hover:bg-gray-200">Load demo</button>
 
-            {/* Upload folder */}
+            {/* Load demo */}
+            <button
+              onClick={loadDemo}
+              className="px-2 py-1 text-xs rounded bg-gray-100 hover:bg-gray-200"
+            >
+              Load demo
+            </button>
+
+            {/* Upload folder (TS-safe) */}
             <label className="px-2 py-1 text-xs rounded bg-blue-50 hover:bg-blue-100 cursor-pointer">
               Upload folder
-              <input type="file" multiple webkitdirectory="true" directory="true" className="hidden" onChange={onPickFolder}/>
+              <input
+                ref={folderRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={onPickFolder}
+              />
             </label>
 
             {/* Upload zip */}
             <label className="px-2 py-1 text-xs rounded bg-violet-50 hover:bg-violet-100 cursor-pointer">
               Upload .zip
-              <input type="file" accept=".zip" className="hidden" onChange={onPickZip}/>
+              <input type="file" accept=".zip" className="hidden" onChange={onPickZip} />
             </label>
           </div>
 
           <div className="grid grid-cols-3">
             <aside className="border-r max-h-[60vh] overflow-auto">
               {fileList.length === 0 ? (
-                <div className="p-3 text-sm text-gray-500">No files loaded. Use <b>Upload folder</b> or <b>Upload .zip</b>.</div>
+                <div className="p-3 text-sm text-gray-500">
+                  No files loaded. Use <b>Upload folder</b> or <b>Upload .zip</b>.
+                </div>
               ) : (
                 fileList.map(p => (
-                  <button key={p} onClick={()=>setActive(p)}
-                    className={`block w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${active===p?'bg-gray-100 font-medium':''}`}>
+                  <button
+                    key={p}
+                    onClick={() => setActive(p)}
+                    className={`block w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${active === p ? 'bg-gray-100 font-medium' : ''}`}
+                  >
                     {p}
                   </button>
                 ))
@@ -127,15 +159,32 @@ export default function Workbench(){
         {/* Ticket */}
         <section className="bg-white rounded-2xl shadow ring-1 ring-black/10 p-4 space-y-3">
           <div className="text-sm text-gray-600">Ticket</div>
-          <input value={title} onChange={e=>setTitle(e.target.value)}
-                 className="w-full border rounded px-3 py-2" placeholder="Ticket title"/>
-          <textarea value={desc} onChange={e=>setDesc(e.target.value)}
-                    className="w-full border rounded px-3 py-2 h-40 font-mono"
-                    placeholder="Describe the change needed…"/>
+          <input
+            value={title}
+            onChange={e => setTitle(e.target.value)}
+            className="w-full border rounded px-3 py-2"
+            placeholder="Ticket title"
+          />
+          <textarea
+            value={desc}
+            onChange={e => setDesc(e.target.value)}
+            className="w-full border rounded px-3 py-2 h-40 font-mono"
+            placeholder="Describe the change needed…"
+          />
           <div className="flex items-center gap-3">
             <div className="text-sm">Mimicness (µ): {mu.toFixed(2)}</div>
-            <input type="range" min={0} max={1} step={0.05} value={mu} onChange={e=>setMu(parseFloat(e.target.value))}/>
-            <button onClick={propose} className="ml-auto px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700">
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={mu}
+              onChange={e => setMu(parseFloat(e.target.value))}
+            />
+            <button
+              onClick={propose}
+              className="ml-auto px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700"
+            >
               Propose Patch
             </button>
           </div>
@@ -145,7 +194,7 @@ export default function Workbench(){
         </section>
       </div>
 
-      {diff && <DiffViewer diff={diff}/>}
+      {diff && <DiffViewer diff={diff} />}
     </div>
   )
 }
