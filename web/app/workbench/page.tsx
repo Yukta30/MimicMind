@@ -26,26 +26,64 @@ export default function Workbench() {
   const [title, setTitle] = useState('Add robust paging to Pager')
   const [desc, setDesc] = useState('Users miss items at page boundaries. Ensure step uses size; add guard.')
   const [diff, setDiff] = useState('')
+  const [err, setErr] = useState<string | null>(null)
 
-  // --- refs for folder input (to set non-standard attributes at runtime) ---
+  // Folder input: set non-standard attributes safely
   const folderRef = useRef<HTMLInputElement | null>(null)
-
   useEffect(() => {
-    if (folderRef.current) {
-      // Add non-standard attributes so TS doesn't complain in JSX
-      (folderRef.current as any).setAttribute('webkitdirectory', 'true')
-      (folderRef.current as any).setAttribute('directory', 'true')
+    const el = folderRef.current as any
+    if (el) {
+      // set properties (works in Chromium/WebKit without touching setAttribute)
+      el.webkitdirectory = true
+      el.directory = true
+      // as a fallback, try attributes only if present
+      if (typeof el.setAttribute === 'function') {
+        try {
+          el.setAttribute('webkitdirectory', 'true')
+          el.setAttribute('directory', 'true')
+        } catch {}
+      }
     }
   }, [])
 
-  // Load demo repo initially (user can replace by upload)
+  // ---- Safe demo loader (won't crash UI if API fails) ----
   const loadDemo = async () => {
-    const r = await fetch(`${API}/api/repo/demo`)
-    const d: Files = await r.json()
-    setFiles(d)
-    setActive(Object.keys(d)[0] || '')
+    setErr(null)
+    try {
+      const url = `${API}/api/repo/demo`
+      const r = await fetch(url, { cache: 'no-store' })
+      if (!r.ok) throw new Error(`Demo fetch failed: ${r.status} ${r.statusText}`)
+      const text = await r.text()
+      let d: Files
+      try {
+        d = JSON.parse(text)
+      } catch {
+        throw new Error('Backend did not return JSON (check NEXT_PUBLIC_API_BASE and CORS).')
+      }
+      setFiles(d)
+      setActive(Object.keys(d)[0] || '')
+    } catch (e: any) {
+      console.error(e)
+      setErr(e?.message || 'Failed to load demo')
+      const fallback: Files = {
+        'src/pager.py': [
+          'class Pager:',
+          '    def page(self, items, size):',
+          '        pages = []',
+          '        for i in range(0, len(items)):',
+          '            if i % size == 0:',
+          '                pages.append(items[i:i+size])',
+          '        return pages',
+          '',
+        ].join('\n'),
+        'README.md': '# Demo repo\n\nThis is a tiny fallback when the API is unreachable.',
+      }
+      setFiles(fallback)
+      setActive(Object.keys(fallback)[0])
+    }
   }
-  useEffect(() => { loadDemo() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { loadDemo() }, []) // initial load
 
   const fileList = useMemo(() => Object.keys(files).sort(), [files])
 
@@ -55,7 +93,6 @@ export default function Workbench() {
     if (!list) return
     const map: Files = {}
     for (const file of Array.from(list)) {
-      // webkitRelativePath is supported by Chromium/WebKit
       const rel = (file as any).webkitRelativePath || file.name
       if (!keep(rel)) continue
       const txt = await file.text()
@@ -98,6 +135,12 @@ export default function Workbench() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">Workbench (Jira-style)</h1>
+
+      {err && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-sm">
+          {err} — using fallback demo data. Check <b>NEXT_PUBLIC_API_BASE</b> and that your backend is live.
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-2 gap-6">
         {/* Repository */}
