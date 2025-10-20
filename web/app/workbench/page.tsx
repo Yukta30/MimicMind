@@ -5,9 +5,12 @@ import DiffViewer from '@/components/DiffViewer'
 
 type Files = Record<string, string>
 
+const API = process.env.NEXT_PUBLIC_API_BASE || ''
+
+// file extensions we’ll keep from uploads
 const ACCEPT = [
-  '.py', '.ts', '.tsx', '.js', '.jsx', '.json', '.md',
-  '.go', '.java', '.rb', '.rs', '.cpp', '.c', '.cs', '.php', '.kt', '.swift'
+  '.py','.ts','.tsx','.js','.jsx','.json','.md',
+  '.go','.java','.rb','.rs','.cpp','.c','.cs','.php','.kt','.swift'
 ]
 
 function keep(path: string) {
@@ -19,52 +22,51 @@ function keep(path: string) {
 }
 
 export default function Workbench() {
-  const API = process.env.NEXT_PUBLIC_API_BASE || ''
+  // repo state
   const [files, setFiles] = useState<Files>({})
-  const [active, setActive] = useState('')
-  const [mu, setMu] = useState(0.60)
+  const [active, setActive] = useState<string>('')
+
+  // ticket + controls
+  const [mu, setMu] = useState(0.6)
   const [title, setTitle] = useState('Add robust paging to Pager')
   const [desc, setDesc] = useState('Users miss items at page boundaries. Ensure step uses size; add guard.')
-  const [diff, setDiff] = useState('')
-  const [err, setErr] = useState<string | null>(null)
 
-  // Folder input: set non-standard attributes safely
+  // result + ui state
+  const [diff, setDiff] = useState<string>('')
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState<boolean>(false)
+
+  // folder input (to set non-standard props safely)
   const folderRef = useRef<HTMLInputElement | null>(null)
   useEffect(() => {
     const el = folderRef.current as any
-    if (el) {
-      // set properties (works in Chromium/WebKit without touching setAttribute)
-      el.webkitdirectory = true
-      el.directory = true
-      // as a fallback, try attributes only if present
+    if (!el) return
+    el.webkitdirectory = true
+    el.directory = true
+    try {
+      // safe fallback: only if setAttribute exists (avoids Chrome error you saw)
       if (typeof el.setAttribute === 'function') {
-        try {
-          el.setAttribute('webkitdirectory', 'true')
-          el.setAttribute('directory', 'true')
-        } catch {}
+        el.setAttribute('webkitdirectory', 'true')
+        el.setAttribute('directory', 'true')
       }
-    }
+    } catch { /* ignore */ }
   }, [])
 
-  // ---- Safe demo loader (won't crash UI if API fails) ----
+  // ---- load demo on first mount (nice first-run UX) ----
   const loadDemo = async () => {
     setErr(null)
+    setBusy(true)
     try {
-      const url = `${API}/api/repo/demo`
-      const r = await fetch(url, { cache: 'no-store' })
-      if (!r.ok) throw new Error(`Demo fetch failed: ${r.status} ${r.statusText}`)
-      const text = await r.text()
-      let d: Files
-      try {
-        d = JSON.parse(text)
-      } catch {
-        throw new Error('Backend did not return JSON (check NEXT_PUBLIC_API_BASE and CORS).')
-      }
-      setFiles(d)
-      setActive(Object.keys(d)[0] || '')
+      const r = await fetch(`${API}/api/repo/demo`, { cache: 'no-store' })
+      if (!r.ok) throw new Error(`Demo fetch failed: ${r.status}`)
+      const json = await r.json() as Files
+      setFiles(json)
+      setActive(Object.keys(json)[0] || '')
+      setDiff('')
     } catch (e: any) {
       console.error(e)
       setErr(e?.message || 'Failed to load demo')
+      // tiny fallback so UI still works even if backend is down
       const fallback: Files = {
         'src/pager.py': [
           'class Pager:',
@@ -74,62 +76,93 @@ export default function Workbench() {
           '            if i % size == 0:',
           '                pages.append(items[i:i+size])',
           '        return pages',
-          '',
         ].join('\n'),
-        'README.md': '# Demo repo\n\nThis is a tiny fallback when the API is unreachable.',
+        'README.md': '# Demo repo\n\nFallback demo when API is unreachable.',
       }
       setFiles(fallback)
-      setActive(Object.keys(fallback)[0])
+      setActive('src/pager.py')
+    } finally {
+      setBusy(false)
     }
   }
-
   useEffect(() => { loadDemo() }, []) // initial load
 
   const fileList = useMemo(() => Object.keys(files).sort(), [files])
 
-  // --- Upload: folder (client-side read) ---
+  // ---- Upload: local folder (client-side read) ----
   const onPickFolder = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const list = e.target.files
     if (!list) return
     const map: Files = {}
-    for (const file of Array.from(list)) {
-      const rel = (file as any).webkitRelativePath || file.name
+    for (const f of Array.from(list)) {
+      const rel = (f as any).webkitRelativePath || f.name
       if (!keep(rel)) continue
-      const txt = await file.text()
+      const txt = await f.text()
       map[rel] = txt
     }
     setFiles(map)
     setActive(Object.keys(map)[0] || '')
     setDiff('')
-    e.target.value = '' // reset
+    e.target.value = '' // reset input so selecting the same folder again works
   }
 
-  // --- Upload: zip (send to backend) ---
+  // ---- Upload: .zip => backend returns {files, diff} ----
   const onPickZip = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
     if (!f) return
-    const form = new FormData()
-    form.set('file', f)
-    form.set('key', 'WB-1')
-    form.set('title', title)
-    form.set('description', desc)
-    form.set('mu', String(mu))
-    const r = await fetch(`${API}/api/patch-zip`, { method: 'POST', body: form })
-    const text = await r.text()
-    setDiff(text)
-    e.target.value = ''
+    setBusy(true)
+    setErr(null)
+    try {
+      const form = new FormData()
+      form.set('file', f)
+      form.set('key', 'WB-1')
+      form.set('title', title)
+      form.set('description', desc)
+      form.set('mu', String(mu))
+
+      const r = await fetch(`${API}/api/patch-zip-json`, { method: 'POST', body: form })
+      const contentType = r.headers.get('content-type') || ''
+      if (!r.ok) throw new Error(`Zip upload failed: ${r.status}`)
+
+      if (contentType.includes('application/json')) {
+        const json = await r.json() as { files: Files, diff: string }
+        // populate the left pane AND show the diff
+        setFiles(json.files || {})
+        setActive(Object.keys(json.files || {})[0] || '')
+        setDiff(json.diff || '')
+      } else {
+        // legacy response (plain diff)
+        const txt = await r.text()
+        setDiff(txt)
+      }
+    } catch (e: any) {
+      console.error(e)
+      setErr(e?.message || 'Zip upload failed')
+    } finally {
+      setBusy(false)
+      e.target.value = ''
+    }
   }
 
-  // --- Propose patch with JSON files (folder upload path) ---
+  // ---- Propose patch from whatever is in memory (works for demo OR folder uploads) ----
   const propose = async () => {
-    const payload = { ticket: { key: 'WB-1', title, description: desc }, files, mu }
-    const r = await fetch(`${API}/api/patch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
-    const text = await r.text()
-    setDiff(text)
+    setBusy(true)
+    setErr(null)
+    try {
+      const payload = { ticket: { key: 'WB-1', title, description: desc }, files, mu }
+      const r = await fetch(`${API}/api/patch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const text = await r.text()
+      setDiff(text)
+    } catch (e: any) {
+      console.error(e)
+      setErr(e?.message || 'Failed to propose patch')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -138,7 +171,7 @@ export default function Workbench() {
 
       {err && (
         <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-sm">
-          {err} — using fallback demo data. Check <b>NEXT_PUBLIC_API_BASE</b> and that your backend is live.
+          {err} — check <b>NEXT_PUBLIC_API_BASE</b> and your backend logs.
         </div>
       )}
 
@@ -148,15 +181,14 @@ export default function Workbench() {
           <div className="border-b px-4 py-2 text-sm text-gray-600 flex gap-2 items-center">
             <span className="mr-auto">Repository</span>
 
-            {/* Load demo */}
             <button
               onClick={loadDemo}
-              className="px-2 py-1 text-xs rounded bg-gray-100 hover:bg-gray-200"
+              disabled={busy}
+              className="px-2 py-1 text-xs rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50"
             >
-              Load demo
+              {busy ? 'Loading…' : 'Load demo'}
             </button>
 
-            {/* Upload folder (TS-safe) */}
             <label className="px-2 py-1 text-xs rounded bg-blue-50 hover:bg-blue-100 cursor-pointer">
               Upload folder
               <input
@@ -168,10 +200,14 @@ export default function Workbench() {
               />
             </label>
 
-            {/* Upload zip */}
             <label className="px-2 py-1 text-xs rounded bg-violet-50 hover:bg-violet-100 cursor-pointer">
               Upload .zip
-              <input type="file" accept=".zip" className="hidden" onChange={onPickZip} />
+              <input
+                type="file"
+                accept=".zip"
+                className="hidden"
+                onChange={onPickZip}
+              />
             </label>
           </div>
 
@@ -182,17 +218,20 @@ export default function Workbench() {
                   No files loaded. Use <b>Upload folder</b> or <b>Upload .zip</b>.
                 </div>
               ) : (
-                fileList.map(p => (
+                fileList.map((p) => (
                   <button
                     key={p}
                     onClick={() => setActive(p)}
-                    className={`block w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${active === p ? 'bg-gray-100 font-medium' : ''}`}
+                    className={`block w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${
+                      active === p ? 'bg-gray-100 font-medium' : ''
+                    }`}
                   >
                     {p}
                   </button>
                 ))
               )}
             </aside>
+
             <pre className="col-span-2 p-4 text-sm font-mono max-h-[60vh] overflow-auto bg-gray-50">
               {active ? files[active] : 'Select a file'}
             </pre>
@@ -204,13 +243,13 @@ export default function Workbench() {
           <div className="text-sm text-gray-600">Ticket</div>
           <input
             value={title}
-            onChange={e => setTitle(e.target.value)}
+            onChange={(e) => setTitle(e.target.value)}
             className="w-full border rounded px-3 py-2"
             placeholder="Ticket title"
           />
           <textarea
             value={desc}
-            onChange={e => setDesc(e.target.value)}
+            onChange={(e) => setDesc(e.target.value)}
             className="w-full border rounded px-3 py-2 h-40 font-mono"
             placeholder="Describe the change needed…"
           />
@@ -222,17 +261,20 @@ export default function Workbench() {
               max={1}
               step={0.05}
               value={mu}
-              onChange={e => setMu(parseFloat(e.target.value))}
+              onChange={(e) => setMu(parseFloat(e.target.value))}
             />
             <button
               onClick={propose}
-              className="ml-auto px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700"
+              disabled={busy}
+              className="ml-auto px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              Propose Patch
+              {busy ? 'Proposing…' : 'Propose Patch'}
             </button>
           </div>
           <p className="text-xs text-gray-500">
-            Tip: <b>Upload folder</b> keeps files client-side and posts only text. <b>Upload .zip</b> sends the archive to the backend.
+            Tip: <b>Upload folder</b> keeps files client-side (we only send text when proposing).{' '}
+            <b>Upload .zip</b> sends the archive to the backend, which returns both the{' '}
+            file map and a proposed diff.
           </p>
         </section>
       </div>
